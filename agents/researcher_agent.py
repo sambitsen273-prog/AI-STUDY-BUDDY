@@ -22,11 +22,11 @@ def run_researcher(
     search_query: str | None = None,
     document_context: str = "",
     history: list[dict] | None = None,
-) -> str:
+) -> dict:
     """
     Research a subtopic via web search and/or document context.
     Stores the resulting note in ChromaDB.
-    Returns the formatted study note string.
+    Returns a dict: {"text": <note text>, "doc_id": <ChromaDB document ID>}
     """
     search_results_text = ""
 
@@ -43,12 +43,15 @@ def run_researcher(
 
     messages = []
     if history:
-        # Use last few turns for context
         messages.extend(history[-4:])
     messages.append({"role": "user", "content": "\n".join(user_parts)})
 
     note = chat(messages=messages, system=SYSTEM, temperature=0.5, max_tokens=1500)
 
-    store_note(subtopic=subtopic, content=note, source="researcher")
+    # Store in vector store and capture the doc_id
+    doc_id = store_note(subtopic=subtopic, content=note, source="researcher")
 
-    return note
+    return {
+        "text": note,
+        "doc_id": doc_id
+    }

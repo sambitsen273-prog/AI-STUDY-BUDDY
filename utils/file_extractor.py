@@ -1,10 +1,10 @@
 """
-utils/file_extractor.py — Extract text from various file types (PDF, DOCX, TXT, Images)
+utils/file_extractor.py — Extract text from files (PDF, DOCX, TXT, Images via Mistral vision)
 """
 from __future__ import annotations
 import os
-import tempfile
-from typing import Optional
+import warnings
+from pathlib import Path
 
 # PDF
 try:
@@ -18,18 +18,18 @@ try:
 except ImportError:
     docx = None
 
-# Images / OCR
+# Tesseract (optional fallback)
 try:
-    from PIL import Image
     import pytesseract
+    from PIL import Image
+    TESSERACT_AVAILABLE = True
 except ImportError:
-    Image = None
-    pytesseract = None
+    TESSERACT_AVAILABLE = False
+
+# Our own vision function
+from utils.llm_client import vision_chat
 
 def extract_text(file_path: str) -> str:
-    """
-    Route file to appropriate extractor based on extension.
-    """
     ext = os.path.splitext(file_path)[1].lower()
     if ext == ".txt":
         return _extract_txt(file_path)
@@ -48,7 +48,7 @@ def _extract_txt(file_path: str) -> str:
 
 def _extract_pdf(file_path: str) -> str:
     if PyPDF2 is None:
-        raise ImportError("PyPDF2 not installed. Please install with: pip install PyPDF2")
+        raise ImportError("PyPDF2 not installed. pip install PyPDF2")
     text = []
     with open(file_path, "rb") as f:
         reader = PyPDF2.PdfReader(f)
@@ -60,22 +60,34 @@ def _extract_pdf(file_path: str) -> str:
 
 def _extract_docx(file_path: str) -> str:
     if docx is None:
-        raise ImportError("python-docx not installed. Please install with: pip install python-docx")
+        raise ImportError("python-docx not installed. pip install python-docx")
     doc = docx.Document(file_path)
-    paragraphs = [p.text for p in doc.paragraphs]
-    return "\n".join(paragraphs)
+    return "\n".join(p.text for p in doc.paragraphs)
 
 def _extract_image(file_path: str) -> str:
-    if Image is None or pytesseract is None:
-        raise ImportError("Pillow and/or pytesseract not installed. For OCR, please install: pip install pillow pytesseract")
-    image = Image.open(file_path)
-    text = pytesseract.image_to_string(image)
-    return text
+    # 1. Try Mistral vision
+    try:
+        prompt = (
+            "Extract and describe all text and visual content from this image. "
+            "If there is code, show it clearly. If it's a diagram, explain the concepts. "
+            "Give a structured summary."
+        )
+        result = vision_chat(file_path, prompt)
+        # Ensure we return a string
+        return result if result else "[No description returned]"
+    except Exception as e:
+        warnings.warn(f"Mistral vision failed: {e}. Falling back to Tesseract if available.")
+        # 2. Fallback to Tesseract
+        if TESSERACT_AVAILABLE:
+            try:
+                image = Image.open(file_path)
+                text = pytesseract.image_to_string(image)
+                return text if text else "[No text extracted via OCR]"
+            except Exception as e2:
+                warnings.warn(f"Tesseract failed: {e2}")
+                return f"[OCR failed: {e2}]"
+        else:
+            return f"[Image processing failed: {e}]"
 
 def summarize_extracted(text: str, max_len: int = 3000) -> str:
-    """
-    Truncate extracted text to avoid token limits.
-    """
-    if len(text) > max_len:
-        return text[:max_len] + "\n...[truncated]"
-    return text
+    return text[:max_len] + ("\n...[truncated]" if len(text) > max_len else "")
