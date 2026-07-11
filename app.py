@@ -385,7 +385,10 @@ if view == "Dashboard":
 
     cols = st.columns(4)
     with cols[0]:
-        if st.button("💬 Send to Buddy", type="primary", use_container_width=True):
+        if st.button("💬 Chat with Buddy", type="primary", use_container_width=True):
+            # If no chats exist, auto‑create one first
+            if not st.session_state.chats:
+                new_chat_callback()  # creates a new chat, sets current_chat_id, saves state
             st.session_state.current_view = "Chat with Buddy"
             st.rerun()
     with cols[1]:
