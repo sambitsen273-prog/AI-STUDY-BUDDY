@@ -1,6 +1,7 @@
 """
 utils/pdf_generator.py — Convert Markdown text to PDF using reportlab
 """
+import html
 from io import BytesIO
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, ListFlowable, ListItem
@@ -10,7 +11,8 @@ from reportlab.lib import colors
 def markdown_to_pdf(markdown_text: str, title: str = "Document") -> bytes:
     """
     Convert a markdown-like text to a PDF byte stream.
-    Supports headings (# ## ###), bullet lists (- ), and plain text.
+    Supports headings (# ## ###) and bullet lists (- ).
+    All text is HTML-escaped to prevent parsing errors.
     """
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
@@ -25,10 +27,10 @@ def markdown_to_pdf(markdown_text: str, title: str = "Document") -> bytes:
         textColor=colors.blue,
         spaceAfter=12
     )
-    story.append(Paragraph(title, title_style))
+    story.append(Paragraph(html.escape(title, quote=False), title_style))
     story.append(Spacer(1, 12))
 
-    # Parse lines
+    # Process lines
     lines = markdown_text.split('\n')
     for line in lines:
         line = line.strip()
@@ -38,23 +40,31 @@ def markdown_to_pdf(markdown_text: str, title: str = "Document") -> bytes:
 
         # Headings
         if line.startswith('# '):
-            story.append(Paragraph(line[2:], styles['Heading1']))
+            content = html.escape(line[2:], quote=False)
+            story.append(Paragraph(content, styles['Heading1']))
         elif line.startswith('## '):
-            story.append(Paragraph(line[3:], styles['Heading2']))
+            content = html.escape(line[3:], quote=False)
+            story.append(Paragraph(content, styles['Heading2']))
         elif line.startswith('### '):
-            story.append(Paragraph(line[4:], styles['Heading3']))
+            content = html.escape(line[4:], quote=False)
+            story.append(Paragraph(content, styles['Heading3']))
+
         # Bullet list
         elif line.startswith('- '):
+            content = html.escape(line[2:], quote=False)
             story.append(ListFlowable(
-                [ListItem(Paragraph(line[2:], styles['Normal']))],
+                [ListItem(Paragraph(content, styles['Normal']))],
                 bulletType='bullet'
             ))
+
         # Separator
         elif line.startswith('---'):
             story.append(Spacer(1, 6))
+
+        # Plain text
         else:
-            # Normal text
-            story.append(Paragraph(line, styles['Normal']))
+            content = html.escape(line, quote=False)
+            story.append(Paragraph(content, styles['Normal']))
 
         story.append(Spacer(1, 6))
 

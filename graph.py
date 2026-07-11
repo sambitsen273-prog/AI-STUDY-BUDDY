@@ -1,5 +1,6 @@
 """
 graph.py — LangGraph StateGraph orchestrating all Study Buddy agents
+with enterprise‑grade security guardrails for tool calls.
 
 Graph topology:
   START
@@ -22,7 +23,10 @@ from agents.quiz_agent import generate_quiz
 from agents.evaluator_agent import run_evaluator
 from config import MAX_RETRIES, QUIZ_PASS_SCORE
 
-# ── Shared state schema ────────────────────────────────────────────────────────
+# ── Import Guardrails ──────────────────────────────────────────────────────
+from utils.guardrails import enforce_tool_schema
+
+# ── Shared state schema ────────────────────────────────────────────────────
 class StudyState(TypedDict):
     # Inputs
     topic: str
@@ -45,7 +49,7 @@ class StudyState(TypedDict):
     # Output / status
     status_log: Annotated[list[str], operator.add]
 
-# ── Node implementations ───────────────────────────────────────────────────────
+# ── Node implementations ──────────────────────────────────────────────────
 def node_planner(state: StudyState) -> dict:
     plan = run_planner(
         topic=state["topic"],
@@ -69,15 +73,28 @@ def node_researcher(state: StudyState) -> dict:
     title = sub.get("title", f"Subtopic {idx+1}")
     query = sub.get("resources", [title])[0] if sub.get("resources") else title
 
+    # ─── GUARD: Enforce schema for the researcher tool ──────────────────
+    params = {
+        "subtopic": title,
+        "search_query": query,
+        "document_context": state.get("document_context", ""),
+        "history": state.get("chat_history", []),
+    }
+    # This will raise ValueError if any parameter is invalid.
+    safe_params = enforce_tool_schema("researcher", params)
+
+    # Now call the researcher with validated parameters
     notes = run_researcher(
-        subtopic=title,
-        search_query=query,
-        document_context=state.get("document_context", ""),
-        history=state.get("chat_history", []),
+        subtopic=safe_params["subtopic"],
+        search_query=safe_params["search_query"],
+        document_context=safe_params["document_context"],
+        history=safe_params["history"],
     )
+
+    # `run_researcher` returns a dict with "text" and "doc_id"
     return {
-        "current_notes": notes,
-        "all_notes": [notes],
+        "current_notes": notes.get("text", notes) if isinstance(notes, dict) else notes,
+        "all_notes": [notes.get("text", notes) if isinstance(notes, dict) else notes],
         "status_log": [f"📚 Researched: {title}"],
         "retry_count": 0,
     }
@@ -122,7 +139,7 @@ def node_advance(state: StudyState) -> dict:
         "status_log": ["➡️ Moving to next subtopic"],
     }
 
-# ── Routing functions ──────────────────────────────────────────────────────────
+# ── Routing functions ──────────────────────────────────────────────────────
 def route_after_eval(state: StudyState) -> Literal["researcher", "advance", "__end__"]:
     result = state.get("eval_result", {})
     passed = result.get("passed", True)
@@ -142,7 +159,7 @@ def route_after_advance(state: StudyState) -> Literal["researcher", "__end__"]:
     total = len(state.get("subtopics", []))
     return "researcher" if idx < total else END
 
-# ── Build graph ────────────────────────────────────────────────────────────────
+# ── Build graph ────────────────────────────────────────────────────────────
 def build_graph() -> StateGraph:
     g = StateGraph(StudyState)
 

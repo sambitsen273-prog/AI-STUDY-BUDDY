@@ -3,6 +3,7 @@ agents/planner_agent.py — Generates a structured JSON study plan (detailed)
 """
 from __future__ import annotations
 from utils.llm_client import chat, parse_json_response
+from utils.guardrails import guard_request
 
 # Large token budget and timeout for long study plans
 PLANNER_MAX_TOKENS = 12000
@@ -114,6 +115,8 @@ def run_planner(topic: str, duration_days: int = 5, context_notes: str = "") -> 
     """
     Returns a detailed study plan dict with exactly duration_days days.
     """
+    guard_request(topic) # block non‑study topic
+
     user_content = f"Topic: {topic}\nDuration: {duration_days} days"
     if context_notes:
         # Limit context to avoid hitting the input token limit

@@ -69,6 +69,29 @@ def load_persistent_state():
 
 saved_state = load_persistent_state()
 
+def build_clean_history(messages: list) -> list:
+    """
+    Return only user-assistant pairs where an assistant actually replied.
+    This drops any orphaned user message that was blocked by guardrails.
+    """
+    clean = []
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        if msg["role"] == "user":
+            # If the very next message is an assistant reply, keep the pair
+            if i + 1 < len(messages) and messages[i + 1]["role"] == "assistant":
+                clean.append(msg)
+                clean.append(messages[i + 1])
+                i += 2
+            else:
+                # Orphaned user message (blocked) – skip it
+                i += 1
+        else:
+            # Shouldn't normally happen; just move on
+            i += 1
+    return clean
+
 # ── Session state initialisation ──────────────────────────────────────────
 if "current_view" not in st.session_state:
     st.session_state.current_view = "Dashboard"
@@ -114,6 +137,8 @@ if "researcher_output" not in st.session_state:
     st.session_state.researcher_output = ""
 if "show_upload" not in st.session_state:
     st.session_state.show_upload = {}
+if "guard_error_message" not in st.session_state:
+    st.session_state.guard_error_message = None
 
 # ── Helper functions ──────────────────────────────────────────────────────
 def delete_uploaded_files(chat_id: str):
@@ -231,8 +256,14 @@ def chat_to_pdf(chat_id: str) -> bytes:
     md += "\n---\n\n*Exported from Study Buddy AI*"
     return markdown_to_pdf(md, title=title)
 
-def chat_export_json(chat_id: str) -> str:
-    return build_chat_export(chat_id)
+# ── Security exception helper ─────────────────────────────────────────────
+def handle_agent_exception(e: Exception) -> str:
+    if isinstance(e, ValueError):
+        st.error(f"🛡️ {e}")   # This will show the guardrail's custom message
+        return "security_violation"
+    else:
+        st.error(f"Error: {e}")
+        return "general_error"
 
 # ── Sidebar ────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -305,7 +336,7 @@ view = st.session_state.current_view
 
 # ========== Dashboard =====================================================
 if view == "Dashboard":
-    # (Dashboard code – same as before – omitted for brevity; use your existing Dashboard code)
+    # (Dashboard code – unchanged)
     st.markdown("""
     <div class="banner-card">
         <div class="banner-text">
@@ -341,7 +372,11 @@ if view == "Dashboard":
             first_words = " ".join(search_query.strip().split()[:4])
             st.session_state.chats[new_id]["title"] = first_words + ("..." if len(search_query.split()) > 4 else "")
             with st.spinner("Thinking..."):
-                response = run_chat(search_query.strip(), history=[], document_context=st.session_state.chats[new_id].get("scanned_context", ""))
+                try:
+                    response = run_chat(search_query.strip(), history=[], document_context=st.session_state.chats[new_id].get("scanned_context", ""))
+                except Exception as e:
+                    handle_agent_exception(e)
+                    response = "I cannot process that request due to security reasons."
             st.session_state.chats[new_id]["messages"].append({"role": "assistant", "content": response})
             st.session_state.current_chat_id = new_id
             st.session_state.current_view = "Chat with Buddy"
@@ -446,7 +481,11 @@ elif view == "Planner":
                 if chat_id and chat_id in st.session_state.chats:
                     doc_context = st.session_state.chats[chat_id].get("scanned_context", "")
                 context = doc_context if use_docs else ""
-                plan = run_planner(topic=topic.strip(), duration_days=int(days), context_notes=context)
+                try:
+                    plan = run_planner(topic=topic.strip(), duration_days=int(days), context_notes=context)
+                except Exception as e:
+                    handle_agent_exception(e)
+                    st.stop()
 
                 if not isinstance(plan, dict) or "subtopics" not in plan:
                     st.error("❌ Failed to generate a valid study plan. Please check your API key and try again.")
@@ -545,12 +584,17 @@ elif view == "Researcher":
                     history = st.session_state.chats[chat_id].get("messages", [])
                 search_q = (focus.strip() or topic.strip()) if use_web else None
                 context = doc_context if use_docs else ""
-                result = run_researcher(
-                    subtopic=topic.strip(),
-                    search_query=search_q,
-                    document_context=context,
-                    history=history
-                )
+                try:
+                    result = run_researcher(
+                        subtopic=topic.strip(),
+                        search_query=search_q,
+                        document_context=context,
+                        history=history
+                    )
+                except Exception as e:
+                    handle_agent_exception(e)
+                    st.stop()
+
                 notes = result["text"]
                 doc_id = result.get("doc_id", "")
                 st.session_state.researcher_output = notes
@@ -621,11 +665,15 @@ elif view == "Quiz Agent":
                     prefill_context = qs.get("prefill_context", "")
                     if prefill_context:
                         notes += f"\n\n--- Additional context from planner/researcher ---\n{prefill_context}"
-                    quiz_data = generate_quiz(
-                        notes or f"Generate a quiz about {topic}",
-                        subtopic=topic,
-                        num_questions=int(num_q)
-                    )
+                    try:
+                        quiz_data = generate_quiz(
+                            notes or f"Generate a quiz about {topic}",
+                            subtopic=topic,
+                            num_questions=int(num_q)
+                        )
+                    except Exception as e:
+                        handle_agent_exception(e)
+                        st.stop()
 
                     if not isinstance(quiz_data, dict) or "questions" not in quiz_data or not quiz_data["questions"]:
                         st.error("❌ Failed to generate quiz. Please check your API key and try again.")
@@ -679,13 +727,17 @@ elif view == "Quiz Agent":
                             correct_cnt = sum(1 for i, ans in qs["answers"].items() if ans == qs["questions"][i]["answer"])
                             qs["score"] = int((correct_cnt / total) * 100)
                             qs["finished"] = True
-                            quiz_doc_id = store_quiz_result(
-                                topic=qs["topic"],
-                                score=qs["score"]/100,
-                                passed=qs["score"] >= 60,
-                                retries=0,
-                                metadata={"session_id": qs.get("session_id", "")}
-                            )
+                            try:
+                                quiz_doc_id = store_quiz_result(
+                                    topic=qs["topic"],
+                                    score=qs["score"]/100,
+                                    passed=qs["score"] >= 60,
+                                    retries=0,
+                                    metadata={"session_id": qs.get("session_id", "")}
+                                )
+                            except Exception as e:
+                                handle_agent_exception(e)
+                                st.stop()
                             st.session_state.chromadb_mock_store.append({
                                 "topic": qs["topic"],
                                 "score": qs["score"],
@@ -711,15 +763,19 @@ elif view == "Quiz Agent":
                 st.error("Score under 60%. Automatically routing weak concepts back to the Researcher Agent.")
                 if st.button("📚 Generate Deeper Notes Now", type="primary"):
                     with st.spinner("Re‑researching weak topics..."):
-                        notes = run_researcher(
-                            subtopic=qs["topic"],
-                            search_query=f"{qs['topic']} explained in detail with examples",
-                            document_context="",
-                            history=[]
-                        )
-                        st.session_state.researcher_output = notes
-                        st.session_state.current_view = "Researcher"
-                        qs["active"] = False
+                        try:
+                            notes_result = run_researcher(
+                                subtopic=qs["topic"],
+                                search_query=f"{qs['topic']} explained in detail with examples",
+                                document_context="",
+                                history=[]
+                            )
+                            notes = notes_result["text"]
+                            st.session_state.researcher_output = notes
+                            st.session_state.current_view = "Researcher"
+                            qs["active"] = False
+                        except Exception as e:
+                            handle_agent_exception(e)
                     st.rerun()
 
             latest_record = st.session_state.chromadb_mock_store[-1] if st.session_state.chromadb_mock_store else {
@@ -800,7 +856,6 @@ elif view == "Chat with Buddy":
             use_container_width=True,
         )
     with col_dl2:
-        # PDF download
         pdf_data = chat_to_pdf(chat_id)
         st.download_button(
             "⬇️ PDF",
@@ -813,6 +868,12 @@ elif view == "Chat with Buddy":
 
     st.markdown('<div class="info-callout">💡 <strong>Tip:</strong> Upload PDFs, images, or text to ground your conversation.</div>', unsafe_allow_html=True)
 
+    # ── PERSISTENT GUARD ERROR DISPLAY ──────────────────────────────────
+    if st.session_state.guard_error_message:
+        with st.chat_message("assistant"):
+            st.error(st.session_state.guard_error_message)
+
+    # ── Normal chat message display ─────────────────────────────────────
     for msg in messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
@@ -865,15 +926,22 @@ elif view == "Chat with Buddy":
         if chat["title"] == "New Chat Session":
             first_words = " ".join(prompt.strip().split()[:4])
             chat["title"] = first_words + ("..." if len(prompt.split()) > 4 else "")
+
         context = chat.get("scanned_context", "")
         with st.spinner("Thinking..."):
             try:
-                response = run_chat(prompt, history=chat["messages"][:-1], document_context=context)
+                # Only pass clean history (skip blocked orphan messages)
+                clean_history = build_clean_history(chat["messages"][:-1])
+                response = run_chat(prompt, history=clean_history, document_context=context)
+                # Success → add assistant message and clear persistent error
+                chat["messages"].append({"role": "assistant", "content": response})
+                st.session_state.guard_error_message = None
+            except ValueError as ve:
+                # Guardrail violation → store persistent error, user message stays
+                st.session_state.guard_error_message = f"🛡️ {ve}"
             except Exception as e:
-                response = f"⚠️ Error: {str(e)}"
-            if not response or response.strip() == "":
-                response = "I'm sorry, I couldn't generate a response. Please try rephrasing your question."
-        chat["messages"].append({"role": "assistant", "content": response})
+                st.error(f"Error: {e}")
+                chat["messages"].append({"role": "assistant", "content": f"Error: {e}"})
         save_persistent_state()
         st.rerun()
 

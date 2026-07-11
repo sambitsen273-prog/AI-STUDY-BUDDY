@@ -5,6 +5,7 @@ from __future__ import annotations
 from tools.search_tool import web_search, format_search_results
 from memory.vector_store import store_note
 from utils.llm_client import chat
+from utils.guardrails import guard_request
 
 SYSTEM = """You are an expert academic researcher and tutor.
 Given a subtopic and raw web search results (or uploaded document content), write clear, structured study notes that a student can learn from.
@@ -28,6 +29,8 @@ def run_researcher(
     Stores the resulting note in ChromaDB.
     Returns a dict: {"text": <note text>, "doc_id": <ChromaDB document ID>}
     """
+    guard_request(subtopic)  # ← blocks non‑study topics
+
     search_results_text = ""
 
     if search_query or subtopic:

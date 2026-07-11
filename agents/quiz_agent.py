@@ -4,6 +4,7 @@ agents/quiz_agent.py — Generates MCQs from study notes and scores answers
 from __future__ import annotations
 import json
 from utils.llm_client import chat, parse_json_response
+from utils.guardrails import guard_request
 
 GENERATE_SYSTEM_TEMPLATE = """You are a quiz master for students.
 Given study notes, generate exactly {num} multiple-choice questions to test understanding.
@@ -70,6 +71,8 @@ def generate_quiz(notes: str, subtopic: str = "", num_questions: int = 5) -> dic
     Never returns None — falls back to a placeholder quiz on failure so
     callers can rely on `"questions" in quiz_data` being safe to check.
     """
+    guard_request(subtopic)  # block non‑study topic
+
     prompt = f"Subtopic: {subtopic}\n\nStudy Notes:\n{notes[:4000]}"
     system = GENERATE_SYSTEM_TEMPLATE.format(num=num_questions)
 
